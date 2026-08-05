@@ -60,3 +60,76 @@ class AutoRouterRoutingTestResponse(BaseModel):
     routing_decision: StandardLoggingRoutingDecision = Field(
         description="The decision record this request would have written to its log row",
     )
+
+
+class AutoRouterCacheBucket(BaseModel):
+    """One prompt-caching bucket of turns, with how often those turns hit the cache."""
+
+    turns: int = Field(description="Turns classified into this bucket")
+    hits: int = Field(description="Turns in this bucket whose response reported cache-read tokens")
+    hit_rate_pct: float = Field(description="hits over this bucket's turns, as a percentage")
+
+
+class AutoRouterCacheStats(BaseModel):
+    """Prompt-caching behaviour of auto-routed turns, bucketed by what the router did.
+
+    Every in-order turn falls in exactly one bucket: the session stayed on the same model,
+    visited a model for the first time (cold by design), or returned to a model it had
+    already used. Out-of-order turns (cross-pod flush races) are counted but not bucketed.
+    """
+
+    coverage_pct: float = Field(description="Share of turns that carried cache telemetry")
+    hit_rate_pct: float = Field(description="All cache hits over telemetry-bearing turns")
+    same_model: AutoRouterCacheBucket
+    first_visit: AutoRouterCacheBucket
+    return_to_tier: AutoRouterCacheBucket
+    unordered_turns: int = Field(description="Turns that arrived out of order and were not bucketed")
+    return_misses_expired: int = Field(
+        description="Return-to-tier misses where the model's recorded cache TTL had lapsed"
+    )
+    return_misses_prefix_changed: int = Field(
+        description="Return-to-tier misses inside the recorded TTL, so the prompt prefix must have changed"
+    )
+    return_misses_unknown: int = Field(description="Return-to-tier misses with no recorded TTL to attribute against")
+    ttl_5m_turns: int = Field(description="Turns whose cache write used the five-minute TTL")
+    ttl_1h_turns: int = Field(description="Turns whose cache write used the one-hour TTL")
+
+
+class AutoRouterBenchmarkTotals(BaseModel):
+    """Session-shape and savings aggregates over auto-routed traffic in the window."""
+
+    sessions: int
+    turns: int
+    avg_turns_per_session: float
+    avg_session_seconds: float
+    avg_tokens_per_session: float
+    spend: float = Field(description="What the routed traffic actually cost")
+    saved_spend: float = Field(
+        description="Signed dollars saved versus the configured single-model baseline, from the same "
+        "per-request savings record the usage tab reads"
+    )
+    baseline_spend: float = Field(description="spend plus saved_spend: the estimated single-model cost")
+    saved_pct: float = Field(description="saved_spend over baseline_spend, as a percentage")
+    saved_per_session: float
+    cache: AutoRouterCacheStats
+
+
+class AutoRouterBenchmarkGroup(AutoRouterBenchmarkTotals):
+    """One auto-router's slice of the benchmarks."""
+
+    router_name: str = Field(description="The auto-router alias requests were sent to")
+    router_type: str = Field(description="complexity, adaptive or quality")
+
+
+class AutoRouterBenchmarksResponse(BaseModel):
+    """Benchmarks for the auto-router dashboard, aggregated from the per-session rollup."""
+
+    start_date: str = Field(description="Window start day, YYYY-MM-DD UTC, inclusive")
+    end_date: str = Field(description="Window end day, YYYY-MM-DD UTC, inclusive")
+    baseline_model: str | None = Field(
+        description="litellm_settings.autorouter_savings_baseline_model, the counterfactual single model; "
+        "None means no baseline is configured and savings read zero"
+    )
+    routers_in_scope: int
+    totals: AutoRouterBenchmarkTotals
+    groups: tuple[AutoRouterBenchmarkGroup, ...]
